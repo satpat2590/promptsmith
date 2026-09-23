@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>promptsmith</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark;
+    --bg:#0f1115; --card:#171b22; --line:#262b35; --text:#e8eaf0; --muted:#9aa3b2; --dim:#7a8391;
+    --go:#2c7; --go-ink:#07200f; --accent:#8b5cf6; --accent-ink:#0b0616; --link:#7aa2f7;
+    --ok:#4ade80; --mid:#facc15; --bad:#f87171; }
+  * { box-sizing:border-box; }
+  body { font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text);
+         max-width:880px; margin:1.5rem auto; padding:0 16px; }
+  h1 { font-size:1.1rem; font-weight:600; margin:0 0 .2rem; }
+  h1 span { color:var(--dim); font-weight:400; }
+  button { background:var(--go); color:var(--go-ink); border:0; padding:.55rem 1rem; border-radius:8px;
+           font-weight:600; cursor:pointer; font-size:.92rem; }
+  button.alt { background:#3a3f4a; color:#cfd2da; }
+  button.accent { background:var(--accent); color:var(--accent-ink); }
+  button.rec { background:var(--bad); color:#2a0707; }
+  button:disabled { opacity:.45; cursor:default; }
+  .row { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+  #status { color:var(--muted); font-size:.88rem; margin:.3rem 0 .9rem; min-height:1.3em; }
+  #status.err { color:var(--bad); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1rem 1.1rem; margin:.9rem 0; }
+  .lbl { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin-bottom:.4rem;
+         display:flex; justify-content:space-between; gap:.5rem; }
+  textarea { width:100%; background:#0f1218; color:var(--text); border:1px solid var(--line); border-radius:8px;
+             padding:.6rem .7rem; font:inherit; resize:vertical; }
+  #transcript { min-height:6.5em; }
+  #prompt { min-height:16em; font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #meter { width:90px; height:8px; background:#262b35; border-radius:4px; overflow:hidden; }
+  #meter i { display:block; height:100%; width:0; background:var(--go); transition:width .08s; }
+  #timer { color:var(--muted); font-variant-numeric:tabular-nums; font-size:.88rem; }
+  .realm { display:grid; grid-template-columns:5.5rem 1fr 2.6rem; gap:.5rem; align-items:center; font-size:.88rem; margin:.15rem 0; }
+  .bar { height:8px; background:#262b35; border-radius:4px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--link); }
+  .realm.top .bar i { background:var(--accent); }
+  .realm .v { text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .chips { margin-top:.6rem; }
+  .chip { display:inline-block; padding:.12rem .55rem; border-radius:999px; font-size:.78rem; margin:.15rem .3rem .15rem 0;
+          border:1px solid #333a46; color:var(--muted); }
+  .chip.ok { color:var(--ok); border-color:#1f4d33; }
+  .chip.mid { color:var(--mid); border-color:#4d4419; }
+  .chip.bad { color:var(--bad); border-color:#5b2a2a; }
+  .verdict { font-weight:700; text-transform:uppercase; font-size:.78rem; letter-spacing:.06em; padding:.15rem .55rem; border-radius:6px; }
+  .verdict.ready { background:#123d24; color:var(--ok); }
+  .verdict.needs_clarification { background:#3d3512; color:var(--mid); }
+  .verdict.invalid, .verdict.unknown { background:#3d1717; color:var(--bad); }
+  #review h3 { font-size:.8rem; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; margin:.8rem 0 .2rem; }
+  #review ul { margin:.1rem 0; padding-left:1.2rem; }
+  .muted { color:var(--dim); font-size:.85rem; }
+  a { color:var(--link); }
+</style></head><body>
+<h1>🎙️ promptsmith <span>voice → Jev → agent review → prompt</span></h1>
+<div id="status">Press <b>Record</b>, speak your prompt, then <b>Finish</b>. You can also type below.</div>
+
+<div class="row">
+  <button id="rec">● Record</button>
+  <button id="finish" class="alt" disabled>■ Finish</button>
+  <div id="meter"><i></i></div><span id="timer"></span>
+</div>
+
+<div class="card">
+  <div class="lbl"><span>transcript</span><span id="txnote">live preview · final pass on Finish · editable</span></div>
+  <textarea id="transcript" placeholder="Your words appear here as you speak. Fix anything misheard before reviewing."></textarea>
+  <div class="row" style="margin-top:.5rem">
+    <button id="review-btn" class="accent">Review with agent →</button>
+    <span class="muted" id="reviewer"></span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="lbl"><span>Jev classification</span><span id="clsnote"></span></div>
+  <div id="realms" class="muted">—</div>
+  <div id="coverage" class="chips"></div>
+</div>
+
+<div class="card" id="review-card" hidden>
+  <div class="lbl"><span>agent review</span><span id="revnote"></span></div>
+  <div id="review"></div>
+</div>
+
+<div class="card" id="prompt-card" hidden>
+  <div class="lbl"><span>improved prompt</span><span id="saved" style="text-transform:none;letter-spacing:0"></span></div>
+  <textarea id="prompt"></textarea>
+  <div class="row" style="margin-top:.5rem">
+    <button id="copy">Copy</button>
+    <button id="download" class="alt">Download .md</button>
+  </div>
+</div>
+
+<p class="muted">promptsmith only <i>crafts</i> prompts — it never runs them. Paste the result into Hermes.</p>
+
+<script>
+const $ = id => document.getElementById(id);
+const TARGET_RATE = 16000, SEND_EVERY_MS = 1500;
+const COVERAGE = [["goal_stated","goal"],["has_requirements","requirements"],["has_context","context"],
+                  ["has_done_criteria","done-criteria"],["single_task","focused"]];
+
+// ── auth token (?token=… from the server banner) ─────────────────────────────
+let token = new URLSearchParams(location.search).get('token') || '';
+try { if (token) localStorage.setItem('ps-token', token); else token = localStorage.getItem('ps-token') || ''; } catch (e) {}
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {}, token ? {'X-Promptsmith-Token': token} : {});
+  const r = await fetch(path, Object.assign({}, opts, {headers}));
+  const data = await r.json().catch(() => ({error: 'bad response (' + r.status + ')'}));
+  if (!r.ok || data.error) throw new Error(data.error || ('HTTP ' + r.status));
+  return data;
+}
+const postJSON = (path, obj) => api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(obj || {})});
+
+function status(msg, err) { $('status').innerHTML = msg; $('status').className = err ? 'err' : ''; }
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ── rendering ────────────────────────────────────────────────────────────────
+let classification = null, classifiedText = '';
+
+function paintClassification(c, text) {
+  classification = c && c.realm_scores ? c : null;
+  classifiedText = text || '';
+  if (!c || !Object.keys(c).length) { $('realms').textContent = '—'; $('coverage').innerHTML = ''; $('clsnote').textContent = ''; return; }
+  if (c.error) { $('clsnote').textContent = c.error; }
+  else $('clsnote').textContent = '';
+  const rs = c.realm_scores || {};
+  const names = Object.keys(rs);
+  $('realms').innerHTML = names.length ? names.map((n, i) =>
+    `<div class="realm${i === 0 ? ' top' : ''}"><span>${esc(n[0].toUpperCase() + n.slice(1))}</span>` +
+    `<div class="bar"><i style="width:${Math.round(rs[n] * 100)}%"></i></div><span class="v">${rs[n].toFixed(2)}</span></div>`
+  ).join('') : '—';
+  const cov = c.coverage || {};
+  const cls = v => v >= 0.6 ? 'ok' : v >= 0.4 ? 'mid' : 'bad';
+  let chips = COVERAGE.filter(([k]) => cov[k] != null)
+    .map(([k, label]) => `<span class="chip ${cls(cov[k])}">${cov[k] >= 0.5 ? '✓' : '✗'} ${label} ${cov[k].toFixed(2)}</span>`);
+  if (cov.completeness != null) chips.push(`<span class="chip ${cls(cov.completeness / 2)}">completeness ${cov.completeness.toFixed(1)}/2</span>`);
+  $('coverage').innerHTML = chips.join('');
+}
+
+function list(title, items) {
+  return items && items.length ? `<h3>${title}</h3><ul>${items.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
+}
+
+function paintReview(r) {
+  const v = r.review || {};
+  const ctx = v.context || {};
+  $('review').innerHTML =
+    `<div class="row"><span class="verdict ${esc(v.verdict)}">${esc((v.verdict || 'unknown').replace('_', ' '))}</span>` +
+    (v.agent ? `<span class="muted">→ agent: <b>${esc(v.agent)}</b></span>` : '') +
+    (v.realm ? `<span class="muted">realm: <b>${esc(v.realm)}</b></span>` : '') + `</div>` +
+    `<p>${esc(v.summary || '')}</p>` +
+    list('Issues', v.issues) + list('Reductions', v.reductions) +
+    list('Improvements', v.improvements) + list('Questions for you', v.questions) +
+    (ctx.docs && ctx.docs.length ? `<h3>Docs consulted</h3><div class="muted">${ctx.docs.map(esc).join('<br>')}</div>` : '');
+  $('revnote').textContent = ctx.backend ? 'via ' + ctx.backend : '';
+  $('review-card').hidden = false;
+  $('prompt').value = r.prompt || '';
+  $('saved').textContent = r.saved ? 'saved: ' + r.saved : '';
+  $('prompt-card').hidden = false;
+}
+
+// ── recording ────────────────────────────────────────────────────────────────
+let session = null, ctx = null, stream = null, node = null, pending = [], sendTimer = null, pollTimer = null;
+let sendChain = Promise.resolve(), startedAt = 0, recording = false;
+
+const WORKLET = `class Tap extends AudioWorkletProcessor {
+  process(inputs) { const ch = inputs[0] && inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true; }
+} registerProcessor('tap', Tap);`;
+
+function downsample(chunks, inRate) {
+  let len = 0; for (const c of chunks) len += c.length;
+  const buf = new Float32Array(len); let o = 0; for (const c of chunks) { buf.set(c, o); o += c.length; }
+  const ratio = inRate / TARGET_RATE, n = Math.floor(len / ratio), out = new Int16Array(n);
+  for (let i = 0; i < n; i++) {   // box-filter average = cheap anti-alias for speech
+    const s = Math.floor(i * ratio), e = Math.min(len, Math.floor((i + 1) * ratio));
+    let sum = 0; for (let j = s; j < e; j++) sum += buf[j];
+    out[i] = Math.max(-1, Math.min(1, sum / Math.max(1, e - s))) * 32767;
+  }
+  return out;
+}
+
+function flush() {
+  if (!pending.length || !session) return sendChain;
+  const pcm = downsample(pending, ctx.sampleRate); pending = [];
+  const id = session;
+  sendChain = sendChain.then(() => api(`/api/session/${id}/audio`, {method: 'POST', body: pcm.buffer}))
+    .then(s => { if (recording) paintLive(s); if (s.full) { status('Hit the 20-minute limit — finishing.'); finish(); } })
+    .catch(e => status('audio upload failed: ' + esc(e.message), true));
+  return sendChain;
+}
+
+function paintLive(s) {
+  if (!s) return;
+  if (s.transcript) $('transcript').value = s.transcript;
+  if (s.classification && Object.keys(s.classification).length) paintClassification(s.classification, s.transcript);
+  if (s.error) status(esc(s.error), true);
+}
+
+async function start() {
+  if (!navigator.mediaDevices || !window.AudioWorkletNode) {
+    return status('The mic needs HTTPS (or localhost). Start the server with HTTPS and accept the certificate.', true);
+  }
+  try {
+    session = (await api('/api/session', {method: 'POST'})).id;
+    stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+    ctx = new AudioContext();
+    await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], {type: 'application/javascript'})));
+    node = new AudioWorkletNode(ctx, 'tap');
+    node.port.onmessage = e => {
+      pending.push(e.data);
+      let peak = 0; for (const x of e.data) peak = Math.max(peak, Math.abs(x));
+      $('meter').firstChild.style.width = Math.min(100, peak * 140) + '%';
+    };
+    ctx.createMediaStreamSource(stream).connect(node);
+  } catch (e) { stopCapture(); return status('could not start the mic: ' + esc(e.message), true); }
+  recording = true; startedAt = Date.now();
+  $('transcript').value = ''; $('transcript').readOnly = true; paintClassification(null);
+  $('review-card').hidden = true; $('prompt-card').hidden = true;
+  $('rec').textContent = '● Recording'; $('rec').className = 'rec'; $('rec').disabled = true; $('finish').disabled = false;
+  status('Listening — speak naturally. The live transcript is a draft; Finish runs the accurate pass.');
+  sendTimer = setInterval(flush, SEND_EVERY_MS);
+  pollTimer = setInterval(() => {
+    $('timer').textContent = new Date(Date.now() - startedAt).toISOString().substr(14, 5);
+    api('/api/session/' + session).then(s => recording && paintLive(s)).catch(() => {});
+  }, 1000);
+}
+
+function stopCapture() {
+  clearInterval(sendTimer); clearInterval(pollTimer);
+  if (node) node.port.onmessage = null;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (ctx) ctx.close();
+  stream = node = null; $('meter').firstChild.style.width = '0';
+}
+
+async function finish() {
+  if (!recording) return;
+  recording = false;
+  node && (node.port.onmessage = null);
+  $('finish').disabled = true;
+  status('Uploading the last audio…');
+  await flush(); await sendChain;
+  stopCapture();
+  $('rec').textContent = '● Record'; $('rec').className = ''; $('rec').disabled = false;
+  status('Transcribing the full recording with the accurate model…');
+  try {
+    const r = await api(`/api/session/${session}/finish`, {method: 'POST'});
+    $('transcript').value = r.transcript; $('transcript').readOnly = false;
+    paintClassification(r.classification, r.transcript);
+    if (!r.transcript) return status('No speech detected — try again, closer to the mic.', true);
+    await runReview();
+  } catch (e) { $('transcript').readOnly = false; status('finish failed: ' + esc(e.message), true); }
+}
+
+async function runReview() {
+  const text = $('transcript').value.trim();
+  if (!text) return status('Nothing to review — record or type a prompt first.', true);
+  $('review-btn').disabled = true;
+  status('The agent is reviewing your prompt against Jev + current system state…');
+  try {
+    const cls = classification && classifiedText.trim() === text ? classification : null;
+    const r = await postJSON('/api/review', {transcript: text, classification: cls});
+    paintClassification(r.classification, text);
+    paintReview(r);
+    status('Done. Edit the prompt if you like, then copy it into Hermes.');
+  } catch (e) { status('review failed: ' + esc(e.message), true); }
+  finally { $('review-btn').disabled = false; }
+}
+
+// ── wiring ───────────────────────────────────────────────────────────────────
+$('rec').onclick = start;
+$('finish').onclick = finish;
+$('review-btn').onclick = runReview;
+$('copy').onclick = async () => {
+  const t = $('prompt').value;
+  try { await navigator.clipboard.writeText(t); status('Copied to clipboard ✔'); }
+  catch (e) { $('prompt').select(); document.execCommand('copy'); status('Copied (fallback) ✔'); }
+};
+$('download').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([$('prompt').value], {type: 'text/markdown'}));
+  a.download = 'prompt-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.md'; a.click();
+};
+api('/api/config').then(c => {
+  $('reviewer').textContent = 'reviewer: ' + c.reviewer + (c.reviewer === 'llm' ? ' (' + c.review_model + ')' : '') +
+    ' · whisper ' + c.whisper_live + ' → ' + c.whisper_final;
+}).catch(e => status(esc(e.message), true));
+</script>
+</body></html>

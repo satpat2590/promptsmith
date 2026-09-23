@@ -1,90 +1,70 @@
-#!/usr/bin/env python3
-"""omni — Omni-ecosystem grounding for promptsmith.
+"""omni — the Omni ecosystem: realm registry, Jev classification, docs and live system state.
 
-OMNI_REALMS maps the six realms of the Omni ecosystem (meaning, repo, bound
-agents, docs). omni_classify() scores a transcript against every realm via
-TypeSafe System One (Jev); fetch_docs() loads a realm's local documentation;
-ground_prompt() rewrites a raw transcript into a doc-grounded prompt.
+OMNI_REALMS (loaded from realms.json) maps each realm to its meaning, repo, bound
+agents and docs. omni_classify() scores a transcript against every realm plus a few
+prompt-quality signals via TypeSafe System One (Jev). collect_docs() and
+system_state() gather what the reviewer agent needs to judge the prompt against
+the system as it is right now.
 """
 
 import json
 import os
+import subprocess
 import urllib.request
 
-TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
-DEFAULT_GROUND_MODEL = "deepseek/deepseek-chat"  # NON-reasoning: reasoning models (v4-*) burn max_tokens on `reasoning` and return empty content on 12KB docs
-DOC_CHAR_CAP = 12000  # per realm
+import config
 
-OMNI_REALMS = {
-    "edoras": {"meaning": "financial (Tolkien)", "repo": "~/edoras",
-               "agents": ["argus", "paisa"],
-               "docs": ["~/edoras/AGENTS.md", "~/edoras/docs", "~/edoras/README.md",
-                        "~/.hermes/profiles/argus/SOUL.md", "~/.hermes/profiles/paisa/SOUL.md",
-                        "~/edoras-operations-journal/AGENTS.md"]},
-    "atma":   {"meaning": "the self / growth (आत्मन्)", "repo": "~/atma",
-               "agents": ["gyani"],
-               "docs": ["~/atma", "~/.hermes/profiles/gyani/SOUL.md", "~/gyani/SOUL.md"]},
-    "soma":   {"meaning": "the body (σῶμα)", "repo": "~/whoop-sync",
-               "agents": [],
-               "docs": ["~/whoop-sync", "~/whoop-sync/README.md"]},
-    "raga":   {"meaning": "sound × emotion × body (राग)", "repo": "~/whoop-sync",
-               "agents": [],
-               "docs": ["~/whoop-sync/spotify_etl.py", "~/whoop-sync/README.md"]},
-    "smriti": {"meaning": "memory (स्मृति)", "repo": "~/veltiosi",
-               "agents": ["veltiosi"],
-               "docs": ["~/veltiosi", "~/.hermes/profiles/veltiosi/SOUL.md", "~/Obsidian"]},
-    "omni":   {"meaning": "the glue (ὅμος)", "repo": "~/omni",
-               "agents": ["satya"],
-               "docs": ["~/omni", "~/omni/net/agent_services.json"]},
+# Cloudflare (error 1010) bans the default python-urllib UA.
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) promptsmith/3.0"
+
+
+def load_realms(path: str = config.REALMS_FILE) -> dict:
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+OMNI_REALMS = load_realms()
+
+# Prompt-quality signals asked alongside the realm questions. `noul` answers are 0..1.
+COVERAGE_QUESTIONS = {
+    "goal_stated": {"type": "noul", "instructions": "Has the user stated a clear goal or objective?"},
+    "has_requirements": {"type": "noul", "instructions": "Has the user stated specific requirements, features, or constraints?"},
+    "has_context": {"type": "noul", "instructions": "Has the user given background or context?"},
+    "has_done_criteria": {"type": "noul", "instructions": "Has the user said how to tell when the task is done?"},
+    "single_task": {"type": "noul", "instructions": "Is this one focused task rather than several unrelated requests?"},
+    "completeness": {
+        "type": "score",
+        "instructions": "How complete is this prompt so far?",
+        "criteria": ["fragmentary — just started", "partial — several parts stated", "complete — ready to finalize"],
+    },
 }
 
 
-def _typesafe_key() -> str:
-    k = os.environ.get("TYPESAFE_API_KEY", "").strip()
-    if k:
-        return k
-    try:
-        for line in open(os.path.expanduser("~/.hermes/.env")):
-            if line.startswith("TYPESAFE_API_KEY="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return ""
-
-
 def _realms_summary() -> str:
-    lines = []
-    for name, r in OMNI_REALMS.items():
-        agents = ", ".join(r["agents"]) or "(none)"
-        lines.append(f"- {name}: {r['meaning']}; bound agents: {agents}")
-    return "\n".join(lines)
+    return "\n".join(
+        f"- {name}: {r['meaning']}; bound agents: {', '.join(r['agents']) or '(none)'}"
+        for name, r in OMNI_REALMS.items()
+    )
 
 
-# ── classification ────────────────────────────────────────────────────────────
+# ── classification (Jev) ──────────────────────────────────────────────────────
 def omni_classify(transcript: str, api_key: str = "") -> dict:
-    """Score the transcript against all six Omni realms + coverage (TypeSafe Jev).
+    """Score the transcript against every realm + coverage signals.
 
-    Returns {"realm_scores": {<realm>: 0..1, ...} sorted desc, "coverage": {...}}.
+    Returns {"realm_scores": {<realm>: 0..1} sorted desc, "coverage": {<signal>: float}}.
     """
-    api_key = api_key or _typesafe_key()
-    questions = {}
-    for name, r in OMNI_REALMS.items():
-        agents = ", ".join(r["agents"]) or "none"
-        questions[f"realm_{name}"] = {
+    api_key = api_key or config.env("TYPESAFE_API_KEY")
+    if not api_key:
+        raise RuntimeError("TYPESAFE_API_KEY not set (export it or put it in ~/.hermes/.env)")
+    questions = {
+        f"realm_{name}": {
             "type": "noul",
             "instructions": f"Does this prompt concern the {name} realm ({r['meaning']})? "
-                            f"Consider the bound agents ({agents}).",
+                            f"Consider the bound agents ({', '.join(r['agents']) or 'none'}).",
         }
-    questions.update({
-        "goal_stated": {"type": "noul", "instructions": "Has the user stated a clear goal or objective?"},
-        "has_requirements": {"type": "noul", "instructions": "Has the user stated specific requirements, features, or constraints?"},
-        "has_context": {"type": "noul", "instructions": "Has the user given background or context?"},
-        "completeness": {
-            "type": "score",
-            "instructions": "How complete is this prompt so far?",
-            "criteria": ["fragmentary — just started", "partial — several parts stated", "complete — ready to finalize"],
-        },
-    })
+        for name, r in OMNI_REALMS.items()
+    }
+    questions.update(COVERAGE_QUESTIONS)
     body = {
         "state": {
             "transcript": transcript,
@@ -95,28 +75,37 @@ def omni_classify(transcript: str, api_key: str = "") -> dict:
         "questions": questions,
     }
     req = urllib.request.Request(
-        TYPESAFE_URL,
+        config.TYPESAFE_URL,
         data=json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
-                 # Cloudflare (error 1010) bans the default python-urllib UA
-                 "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) promptsmith/2.0"},
+                 "User-Agent": USER_AGENT},
     )
     with urllib.request.urlopen(req, timeout=60) as r:
-        a = json.loads(r.read())["answers"]
-    realm_scores = {name: round(a[f"realm_{name}"]["noul"], 2) for name in OMNI_REALMS}
-    realm_scores = dict(sorted(realm_scores.items(), key=lambda kv: kv[1], reverse=True))
-    coverage = {
-        "goal_stated": round(a["goal_stated"]["noul"], 2),
-        "has_requirements": round(a["has_requirements"]["noul"], 2),
-        "has_context": round(a["has_context"]["noul"], 2),
-        "completeness": round(a["completeness"]["score"], 2),
+        answers = json.loads(r.read())["answers"]
+
+    def val(key, kind):
+        v = (answers.get(key) or {}).get(kind)
+        return round(float(v), 2) if v is not None else None
+
+    scores = {name: val(f"realm_{name}", "noul") or 0.0 for name in OMNI_REALMS}
+    coverage = {k: val(k, q["type"]) for k, q in COVERAGE_QUESTIONS.items()}
+    return {
+        "realm_scores": dict(sorted(scores.items(), key=lambda kv: kv[1], reverse=True)),
+        "coverage": {k: v for k, v in coverage.items() if v is not None},
     }
-    return {"realm_scores": realm_scores, "coverage": coverage}
 
 
-# ── doc fetching ──────────────────────────────────────────────────────────────
-def _md_files_one_level(path: str) -> list:
-    """*.md files in `path` and in its immediate subdirectories (one level)."""
+def pick_realms(realm_scores: dict, threshold: float = config.REALM_THRESHOLD, limit: int = 2) -> list:
+    """Realms scoring >= threshold (at most `limit`), else the single top realm."""
+    picks = [n for n, s in realm_scores.items() if s >= threshold and n in OMNI_REALMS]
+    if not picks:
+        picks = [n for n in realm_scores if n in OMNI_REALMS][:1]
+    return picks[:limit]
+
+
+# ── docs ──────────────────────────────────────────────────────────────────────
+def _md_files(path: str, keep=lambda name: True) -> list:
+    """*.md files in `path` and its immediate subdirectories (one level), filtered by `keep`."""
     files = []
     try:
         names = sorted(os.listdir(path))
@@ -124,135 +113,107 @@ def _md_files_one_level(path: str) -> list:
         return files
     for name in names:
         full = os.path.join(path, name)
-        if os.path.isfile(full) and name.endswith(".md"):
+        if os.path.isfile(full) and name.endswith(".md") and keep(name):
             files.append(full)
-        elif os.path.isdir(full):
+        elif os.path.isdir(full) and not name.startswith(".") and keep(name):
             try:
-                subs = sorted(os.listdir(full))
+                files += [os.path.join(full, s) for s in sorted(os.listdir(full))
+                          if s.endswith(".md") and os.path.isfile(os.path.join(full, s))]
             except OSError:
                 continue
-            for sub in subs:
-                sf = os.path.join(full, sub)
-                if os.path.isfile(sf) and sub.endswith(".md"):
-                    files.append(sf)
     return files
 
 
-def _obsidian_key_files(path: str) -> list:
-    """Cap the Obsidian vault to key files only (README / MOCs) — never crawl it."""
-    files = []
-    try:
-        names = sorted(os.listdir(path))
-    except OSError:
-        return files
-    for name in names:
-        full = os.path.join(path, name)
-        low = name.lower()
-        if os.path.isfile(full) and name.endswith(".md") and ("readme" in low or "moc" in low):
-            files.append(full)
-        elif os.path.isdir(full) and ("moc" in low or "readme" in low):
-            try:
-                subs = sorted(os.listdir(full))
-            except OSError:
-                continue
-            for sub in subs:
-                sf = os.path.join(full, sub)
-                if os.path.isfile(sf) and sub.endswith(".md"):
-                    files.append(sf)
-    return files
+def _obsidian_keep(name: str) -> bool:
+    # Only README / MOC notes — never crawl the whole vault.
+    low = name.lower()
+    return "readme" in low or "moc" in low
 
 
-def fetch_docs(realm_name: str) -> str:
-    """Read the realm's docs (AGENTS.md / SOUL.md / README.md / docs *.md, one level
-    deep). Missing paths are skipped. Total text capped at ~DOC_CHAR_CAP chars."""
+def collect_docs(realm_name: str, cap: int = config.DOC_CHAR_CAP) -> list:
+    """[(path, text)] for the realm's docs; missing paths skipped, total text capped."""
     realm = OMNI_REALMS.get(realm_name)
     if not realm:
-        return ""
-    parts, total = [], 0
+        return []
+    out, total, seen = [], 0, set()
     for p in realm["docs"]:
         path = os.path.expanduser(p)
-        if not os.path.exists(path):
-            continue
         if os.path.isfile(path):
             files = [path]
-        elif os.path.basename(path.rstrip("/")) == "Obsidian":
-            files = _obsidian_key_files(path)
+        elif os.path.isdir(path):
+            keep = _obsidian_keep if os.path.basename(path.rstrip("/")) == "Obsidian" else (lambda n: True)
+            files = _md_files(path, keep)
         else:
-            files = _md_files_one_level(path)
+            continue
         for f in files:
+            if f in seen:
+                continue
+            seen.add(f)
             try:
-                text = open(f, encoding="utf-8", errors="replace").read()
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read(cap - total)
             except OSError:
                 continue
-            chunk = f"\n\n--- {f} ---\n{text}"
-            if total + len(chunk) > DOC_CHAR_CAP:
-                chunk = chunk[: max(0, DOC_CHAR_CAP - total)]
-            if chunk:
-                parts.append(chunk)
-                total += len(chunk)
-            if total >= DOC_CHAR_CAP:
-                return "".join(parts)
-    return "".join(parts)
-
-
-# ── doc-grounded refinement ───────────────────────────────────────────────────
-def ground_prompt(transcript: str, realm_scores: dict, model: str = None) -> str:
-    """Rewrite `transcript` grounded in the docs of the top-scoring realm(s).
-
-    Picks realms with score >= 0.35 (at minimum the top-1 realm). Returns the
-    grounded prompt text, or the transcript unchanged if nothing can be picked.
-    """
-    from promptsmith import _llm
-
-    model = model or os.environ.get("PROMPTSMITH_GROUND_MODEL", DEFAULT_GROUND_MODEL)
-    picks = [n for n, s in realm_scores.items() if s >= 0.35]
-    if not picks and realm_scores:
-        picks = [next(iter(realm_scores))]
-    picks = [p for p in picks if p in OMNI_REALMS]
-    if not picks or not transcript.strip():
-        return transcript
-
-    realm_bits, doc_bits = [], []
-    for name in picks:
-        r = OMNI_REALMS[name]
-        agents = ", ".join(r["agents"]) or "none"
-        realm_bits.append(f"the {name} realm ({r['meaning']}), whose bound agents are {agents}")
-        docs = fetch_docs(name)
-        if docs:
-            doc_bits.append(f"=== documentation for realm '{name}' ===\n{docs}")
-    realms_desc = "; and ".join(realm_bits)
-    docs_text = "\n\n".join(doc_bits) or "(no local documentation found)"
-
-    system = (
-        "You ground a user's spoken prompt in the Omni ecosystem. "
-        f"The prompt concerns {realms_desc}. "
-        "Use the documentation below to refine the prompt so it uses correct domain terminology, "
-        "names the real agents/entities/services from the docs, and is actionable by the right agent. "
-        "Preserve the user's intent and wording. Do not invent requirements. "
-        "Append an '## Omni context' section naming the realm, the responsible agent, and which "
-        "doc(s) informed the refinement."
-    )
-    user = f"TRANSCRIPT:\n{transcript}\n\n{docs_text}"
-    out = _llm(system, user, model)
-    if not out or "## Omni context" not in out:  # reasoning models can spill an empty body; retry once
-        out = _llm(system, user, model)
-    if not out:
-        return transcript
+            if text:
+                out.append((f, text))
+                total += len(text)
+            if total >= cap:
+                return out
     return out
 
 
-def merge_omni_context(final: str, grounded: str) -> str:
-    """Guarantee the final prompt carries the grounded '## Omni context' section
-    (the structure/refine passes may otherwise rewrite it away)."""
-    marker = "## Omni context"
-    if marker in final or marker not in grounded:
-        return final
-    section = grounded[grounded.index(marker):]
-    lines = section.splitlines()
-    end = len(lines)
-    for i, line in enumerate(lines[1:], 1):
-        if line.startswith("## ") or line.startswith("# "):
-            end = i
-            break
-    section = "\n".join(lines[:end]).strip()
-    return final.rstrip() + "\n\n" + section + "\n"
+def fetch_docs(realm_name: str) -> str:
+    """The realm's docs as one text blob (see collect_docs)."""
+    return "".join(f"\n\n--- {path} ---\n{text}" for path, text in collect_docs(realm_name))
+
+
+# ── live system state ─────────────────────────────────────────────────────────
+def _run(cmd, cwd=None, timeout=5) -> str:
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                           shell=isinstance(cmd, str))
+        return (r.stdout or r.stderr).strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"(failed: {e})"
+
+
+def _repo_state(repo: str) -> str:
+    path = os.path.expanduser(repo)
+    if not os.path.isdir(path):
+        return f"{repo}: (not present on this machine)"
+    if not os.path.isdir(os.path.join(path, ".git")):
+        return f"{repo}: present (not a git repo)"
+    branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path)
+    dirty = _run(["git", "status", "--porcelain"], cwd=path)
+    log = _run(["git", "log", "-8", "--date=short", "--pretty=%ad %h %s"], cwd=path)
+    changed = len([l for l in dirty.splitlines() if l.strip()])
+    return f"{repo}: branch {branch}, {changed} uncommitted change(s)\n  recent commits:\n" + \
+        "\n".join("    " + l for l in log.splitlines())
+
+
+def system_state(realms: list) -> str:
+    """A short, read-only snapshot of the parts of the system the prompt touches."""
+    lines = []
+    repos = []
+    for name in realms:
+        repo = OMNI_REALMS.get(name, {}).get("repo")
+        if repo and repo not in repos:
+            repos.append(repo)
+    for repo in repos:
+        lines.append(_repo_state(repo))
+    profiles = os.path.expanduser("~/.hermes/profiles")
+    if os.path.isdir(profiles):
+        lines.append("hermes profiles (agents): " + ", ".join(sorted(os.listdir(profiles))))
+    if config.STATE_CMD:
+        lines.append(f"$ {config.STATE_CMD}\n" + _run(config.STATE_CMD, timeout=15)[:4000])
+    return "\n".join(lines) or "(no system state available)"
+
+
+def whisper_vocabulary() -> list:
+    """Proper nouns whisper should spell correctly (realms, agents, extras from env)."""
+    words = ["Omni", "Hermes", "Jev", "promptsmith"]
+    for name, r in OMNI_REALMS.items():
+        words.append(name.capitalize())
+        words += [a.capitalize() for a in r["agents"]]
+    words += [w.strip() for w in config.EXTRA_VOCAB.split(",") if w.strip()]
+    return list(dict.fromkeys(words))
