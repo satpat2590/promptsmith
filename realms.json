@@ -1,0 +1,40 @@
+{
+  "edoras": {
+    "meaning": "financial (Tolkien)",
+    "repo": "~/edoras",
+    "agents": ["argus", "paisa"],
+    "docs": ["~/edoras/AGENTS.md", "~/edoras/docs", "~/edoras/README.md",
+             "~/.hermes/profiles/argus/SOUL.md", "~/.hermes/profiles/paisa/SOUL.md",
+             "~/edoras-operations-journal/AGENTS.md"]
+  },
+  "atma": {
+    "meaning": "the self / growth (आत्मन्)",
+    "repo": "~/atma",
+    "agents": ["gyani"],
+    "docs": ["~/atma", "~/.hermes/profiles/gyani/SOUL.md", "~/gyani/SOUL.md"]
+  },
+  "soma": {
+    "meaning": "the body (σῶμα)",
+    "repo": "~/whoop-sync",
+    "agents": [],
+    "docs": ["~/whoop-sync", "~/whoop-sync/README.md"]
+  },
+  "raga": {
+    "meaning": "sound × emotion × body (राग)",
+    "repo": "~/whoop-sync",
+    "agents": [],
+    "docs": ["~/whoop-sync/spotify_etl.py", "~/whoop-sync/README.md"]
+  },
+  "smriti": {
+    "meaning": "memory (स्मृति)",
+    "repo": "~/veltiosi",
+    "agents": ["veltiosi"],
+    "docs": ["~/veltiosi", "~/.hermes/profiles/veltiosi/SOUL.md", "~/Obsidian"]
+  },
+  "omni": {
+    "meaning": "the glue (ὅμος)",
+    "repo": "~/omni",
+    "agents": ["satya"],
+    "docs": ["~/omni", "~/omni/net/agent_services.json"]
+  }
+}

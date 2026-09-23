@@ -1,3 +1,4 @@
 faster-whisper>=1.0
-sounddevice>=0.5
+sounddevice>=0.5   # CLI mic recording only (needs PortAudio)
 numpy
+# dev: pytest
