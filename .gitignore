@@ -1,0 +1,7 @@
+# runtime / generated — never commit
+certs/
+out/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
