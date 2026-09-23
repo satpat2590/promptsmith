@@ -32,6 +32,8 @@ It prints something like `https://192.168.1.20:8721/`. Open that on the desktop,
 the self-signed certificate once (browsers only allow the mic over HTTPS), then:
 
 1. **Record**: speak. The live transcript is a draft, and Jev scores update as you go.
+   **Pause** (or Space) stops capturing while you gather your thoughts; nothing is recorded
+   until you **Resume**, and the timer only counts recorded time.
 2. **Finish**: the whole recording is re-transcribed with the more accurate model, and
    the review runs automatically.
 3. Fix any misheard words in the transcript box and hit **Review with agent** to re-run.
